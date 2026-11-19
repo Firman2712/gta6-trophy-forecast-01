@@ -389,14 +389,14 @@ def forecast_case(case):
     # sigma is wider.  The spread is deliberately NOT tuned to the minimum
     # on the 10h validation (that would overfit: beta_inf was itself fitted
     # to the live page, so the validation medians are nearly exact by
-    # construction).  sigma is set to the plausible median-error scale,
-    # and the first submission's 0.77 coverage (nominal 0.90) showed the
-    # flat-path spread was too narrow, so its 0.7 multiplier was removed:
-    # sigma at 90 min is now 0.21, matching the implied error scale ~0.20.
+    # construction).  sigma is set to the plausible median-error scale.
+    # Round 2's practice coverage was 0.9545 (nominal 0.90), so the flat
+    # path was ~20% too wide; the 0.85 multiplier brings it to ~0.90.
+    # Round 3 only.
     if growing:
         sigma_base = math.sqrt(0.09 + 0.08 * horizon_days)
     else:
-        sigma_base = math.sqrt(0.04 + 0.054 * horizon_days)
+        sigma_base = 0.85 * math.sqrt(0.04 + 0.054 * horizon_days)
     out = []
     for i, tr in enumerate(trophies):
         e = e_tgt[i]

@@ -48,11 +48,20 @@ paths:
 
 Median = `E(target)/N(target)`. Logit spread σ grows with horizon and
 with how the case was forecast: the flat (anchor) path is tightly
-anchored, so σ is modest (`√(0.04 + 0.054·days)`); the growing
+anchored, so σ is modest (`0.85·√(0.04 + 0.054·days)`); the growing
 (fit) path extrapolates 4.5 days from a fit, so σ is wider
 (`√(0.09 + 0.08·days)`). Fast trophies (low `β_inf`) get a 1.15× wider
 spread. `q_τ = logistic(logit(median) + z_τ·σ)` with the standard normal
 quantiles. The ~100% trophy is forecast at 99.99% with a tight spread.
+
+## Round 3 (19 Nov 2026, after the second submission's practice score)
+
+Round 2 scored **practice loss 0.0809, rank 25/3,689** (typical miss
+0.03 pp, coverage_90 0.9545) — just outside the top 20 (line 0.0784).
+Coverage 0.9545 vs the nominal 0.90 means the flat-path spread was now
+~20% too wide, so the multiplier went 1.0 → 0.85 (σ ≈ 0.18 at 90 min).
+Round 3 touches only the flat path, so the final-case forecast is
+unchanged. 10h pseudo-case loss 0.0457; synthetic final-like 0.1882.
 
 ## How it was validated
 
@@ -60,7 +69,7 @@ No local grading exists — the server grades every entry — so validation
 used the live public Exophase page as ground truth:
 
 - **10-hour pseudo-case** (practice history → live page at 13:32 UTC
-  19 Nov, 631 min horizon): pinball loss **0.049**, vs 2.38 for the
+  19 Nov, 631 min horizon): pinball loss **0.046**, vs 2.38 for the
   house persistence baseline and 1.01 for pure dilution. The flat-path
   parameters (β relaxation τ = 3h, earners-growth 0.10) were tuned on
   this; the spread was deliberately *not* tuned to the minimum (that

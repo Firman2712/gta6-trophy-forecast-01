@@ -6,7 +6,7 @@
 
 A forecaster for GTA VI's trophy earn rates on Exophase: given one sealed case of trophy-page reads, it forecasts five quantiles (5%, 25%, 50%, 75%, 95%) of each of the 55 trophies' earn rate at the target time, scored by pinball loss on the logit scale. It models players-tracked and earners separately, so an Exophase refresh (players jump, rates drop) falls out of the model instead of needing to be patched in. See `METHOD.md` for the model and how it was validated.
 
-Practice cut (server): round 1 scored loss **0.0955, rank 40/3,588**; round 2 (this commit) fixes the stale-history earners growth and the too-narrow spread.
+Practice cut (server): round 1 scored loss **0.0955, rank 40/3,588**; round 2 scored loss **0.0809, rank 25/3,689**; round 3 (this commit) narrows the flat-path spread to fix the 0.9545 over-coverage.
 
 ## Run it
 
