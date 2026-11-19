@@ -94,8 +94,14 @@ BETA_DEFAULT = 0.95
 # the true practice loss).
 BETA_TAU_HOURS = 3.0
 # Uniform earners-growth multiplier for the players already tracked
-# (they keep playing): 1 + BETA_G * (1 - exp(-dt/3h)).  Tuned on validation.
-BETA_G = 0.05
+# (they keep playing): 1 + BETA_G * (1 - exp(-dt_s/3h)), where dt_s spans
+# the last refresh (first read) to the target.  0.10 is a hedge: the first
+# submission's practice loss (0.0955, rank 40) is consistent with both a
+# small median bias (factor too low) and a too-narrow spread, so the
+# factor is raised only ~5% (0.159 -> 0.167 at 90 min) while the spread
+# is widened to the implied error scale.  A large raise would overshoot
+# if the medians were already accurate.
+BETA_G = 0.10
 N_CAP = 2_000_000.0
 
 
@@ -116,15 +122,26 @@ def n_from_anchors(t_hours):
     return math.exp(math.log(y1) + s * (math.log(t_hours) - math.log(x1)))
 
 
-def flat_forecast(last_rates, last_n, at, target, trophies=None):
-    """Forecast (N_target, [E_i(target)]) from a flat history."""
+def flat_forecast(last_rates, last_n, at, target, trophies=None, t_stale=None):
+    """Forecast (N_target, [E_i(target)]) from a flat history.
+
+    The history's rates are STALE: Exophase last refreshed the page before
+    the first read (the kit's notice: the launch-night page was unchanged
+    from 23:48).  So the earners in the case are from t_stale (the first
+    read's time, a proxy for the last refresh), not from the checkpoint,
+    and the earners' growth spans t_stale -> target (about 4.7h for the
+    practice cases), not checkpoint -> target (1.5h).  Growing over only
+    1.5h understates the earners by ~15% and was the main error in the
+    first submission (practice loss 0.0955, rank 40).
+    """
     dt_h = max(0.0, (target - at) / 3600.0)
+    dt_s = max(dt_h, (target - t_stale) / 3600.0) if t_stale else dt_h
     t_tgt_h = max(0.05, (target - LAUNCH_EPOCH) / 3600.0)
     n_tgt = clamp(n_from_anchors(t_tgt_h), last_n, N_CAP)
     n_ratio = n_tgt / last_n if last_n > 0 else 1.0
     # beta relaxes from 1 (short horizon) toward beta_inf (long horizon).
     relax = 1.0 - math.exp(-dt_h / BETA_TAU_HOURS)
-    g_old = 1.0 + BETA_G * (1.0 - math.exp(-dt_h / 3.0))
+    g_old = 1.0 + BETA_G * (1.0 - math.exp(-dt_s / 3.0))
     e_tgt = []
     for i, r in enumerate(last_rates):
         if r is None:
@@ -363,7 +380,8 @@ def forecast_case(case):
                 e = math.exp(a + b_s * xt)
             e_tgt.append(clamp(e, le, n_tgt))
     else:
-        n_tgt, e_tgt = flat_forecast(last_rates, last_n, at, target, trophies)
+        n_tgt, e_tgt = flat_forecast(last_rates, last_n, at, target, trophies,
+                                     t_stale=reads[0][0])
 
     # --- quantiles --------------------------------------------------------
     # Spread: the flat (anchor) path is tightly anchored, so sigma is
@@ -371,11 +389,14 @@ def forecast_case(case):
     # sigma is wider.  The spread is deliberately NOT tuned to the minimum
     # on the 10h validation (that would overfit: beta_inf was itself fitted
     # to the live page, so the validation medians are nearly exact by
-    # construction).  sigma is set to the plausible median-error scale.
+    # construction).  sigma is set to the plausible median-error scale,
+    # and the first submission's 0.77 coverage (nominal 0.90) showed the
+    # flat-path spread was too narrow, so its 0.7 multiplier was removed:
+    # sigma at 90 min is now 0.21, matching the implied error scale ~0.20.
     if growing:
         sigma_base = math.sqrt(0.09 + 0.08 * horizon_days)
     else:
-        sigma_base = 0.7 * math.sqrt(0.04 + 0.054 * horizon_days)
+        sigma_base = math.sqrt(0.04 + 0.054 * horizon_days)
     out = []
     for i, tr in enumerate(trophies):
         e = e_tgt[i]
