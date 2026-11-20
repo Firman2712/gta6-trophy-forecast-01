@@ -15,18 +15,23 @@ instead of needing to be patched in. The two regimes in the data need two
 paths:
 
 - **Growing history** (the final case: ~2.5 days of reads up to the
-  deadline). `N(t)` is fitted two ways and blended by the observed
-  deceleration (recent log-log slope vs overall slope): a power law,
-  `log N` against `log(hours since launch)`, on the last 24h of distinct
-  reads, and a saturating exponential `N = A - B·exp(-h/τ)` (τ by grid
-  search) on all distinct reads. No deceleration → power law; strong
-  deceleration → saturating. A pure exponential is never used: it wildly
-  overshoots a 4.5-day horizon. `E_i(t)` is fitted per trophy as
-  `log E_i` against `log(hours since launch)` on the last 24h of distinct
-  reads, with the slope shrunk toward the cross-trophy median slope
-  (empirical-Bayes pooling, weighted by trophy size). Earners never
-  decrease and never exceed `N`. Only reads where `N` changed count as
-  fresh — stale repeats between refreshes carry no new information.
+  deadline). `N(t)` is a saturating exponential `N = A - B·exp(-h/τ)`
+  (τ by grid search) fitted on the reads from the first refresh onward,
+  extrapolated to the target minus a 12h refresh lag (the answer is the
+  rates as of the last Exophase refresh before the target, and refresh
+  gaps observed so far — 4.7h, ≤9h, ≥14h and lengthening — put that
+  refresh typically 12–24h before the target). A pure exponential is
+  never used: it wildly overshoots a 4.5-day horizon. `E_i(t)` is fitted
+  per trophy as `log E_i` against `log(hours since launch)` on the last
+  24h of distinct reads, with the slope shrunk toward the cross-trophy
+  median slope (empirical-Bayes pooling, weighted by trophy size; the
+  shrink pivots at each fit's centroid and the weight caps at 0.95).
+  Earners never decrease and never exceed `N`. Only reads where `N`
+  changed count as fresh — stale repeats between refreshes carry no new
+  information — and, since round 4, the fits use only the reads from
+  the first `N`-change onward: the launch-night page (638 players) is a
+  stale snapshot whose earners come from hours of play, and placing
+  those reads at h≈0.1 badly distorted every log-log fit.
 - **Flat history** (the practice cases: the launch-night page never
   refreshed, so the history is one stale snapshot repeated). `N(t)`
   follows an anchor curve fitted to the three known public reads — 638
@@ -50,7 +55,7 @@ Median = `E(target)/N(target)`. Logit spread σ grows with horizon and
 with how the case was forecast: the flat (anchor) path is tightly
 anchored, so σ is modest (`0.85·√(0.04 + 0.054·days)`); the growing
 (fit) path extrapolates 4.5 days from a fit, so σ is wider
-(`√(0.09 + 0.08·days)`). Fast trophies (low `β_inf`) get a 1.15× wider
+(`0.8·√(0.09 + 0.08·days)` since round 4). Fast trophies (low `β_inf`) get a 1.15× wider
 spread. `q_τ = logistic(logit(median) + z_τ·σ)` with the standard normal
 quantiles. The ~100% trophy is forecast at 99.99% with a tight spread.
 
@@ -62,6 +67,45 @@ Coverage 0.9545 vs the nominal 0.90 means the flat-path spread was now
 ~20% too wide, so the multiplier went 1.0 → 0.85 (σ ≈ 0.18 at 90 min).
 Round 3 touches only the flat path, so the final-case forecast is
 unchanged. 10h pseudo-case loss 0.0457; synthetic final-like 0.1882.
+
+## Round 4 (20 Nov 2026 — the growing path, the real lever)
+
+Rounds 1–3 only tuned the flat path (practice cases); the final case
+uses the growing path, which was unchanged — and unvalidated against
+realistic data. Two new facts drove this round: the live Exophase page
+was **unchanged 19 Nov 13:32 → 20 Nov 03:32 UTC** (all 55 rates
+identical, ~14h with no refresh), so refreshes are sparse and
+irregular, and the final answer is the rates as of the **last refresh
+before the target**, not at the target instant. A new validation,
+`tools/sparse_test.py`, builds final-like cases with sparse refresh
+histories (5 distinct states, calibrated to the real N ≈ 3,868 at
+04:30 and ≈ 15,000 at 13:32) across 8 truth regimes, and scores
+against the truth as of the last refresh before the target. On it the
+round-3 model **lost to persistence in all 8 regimes** (mean loss
+~0.38 vs ~0.23) — the growing path was actively harmful. Three bugs
+found and fixed:
+
+- **Stale launch-night reads poisoned every log-log fit.** The fits
+  used the 638-player reads at h≈0.1, but those earners come from
+  hours of play; it dragged the fishing slope from ~2.1 to ~0.9. Fits
+  now start at the first N-change, with consecutive repeats dropped.
+- **Slope shrinkage pivoted at h=1h** (`exp(a + b_s·xt)`), far below
+  the data, systematically under-predicting fast trophies. It now
+  pivots at each fit's centroid, and the shrink weight cap rises
+  0.85 → 0.95.
+- **The deceleration blend never engaged** (its recent-slope window
+  fell back to all points, so d = 1 by construction). The blend is
+  gone: N(t) is the saturating fit alone — it beat the power-law fit
+  in every regime tested, even when the truth itself was a power law.
+- Plus: **12h refresh lag** (E and N extrapolated to target − 12h)
+  and growing σ ×0.8 (medians are now accurate enough to earn it).
+
+Results (sparse test, mean loss vs answer-truth): round 3 **~0.38** →
+round 4 **0.093** (vs persistence ~0.23); vs target-truth 0.109.
+Dense synthetic test: 0.188 → **0.155** (persistence 0.251).
+10h pseudo-case (flat path): unchanged **0.046**. Practice score
+will be unchanged (flat path untouched) — the prize is decided by the
+final case, which is what this round improves.
 
 ## How it was validated
 
@@ -80,6 +124,14 @@ used the live public Exophase page as ground truth:
   persistence in both regimes; the earlier power-law-only `N` ensemble
   lost badly on the power-law truth, which is what motivated the
   deceleration-blended ensemble.
+- **Sparse-refresh final-like cases** (`tools/sparse_test.py`, round 4):
+  histories with only ~5 distinct refresh states (calibrated to the
+  real N ≈ 3,868 at 04:30 and ≈ 15,000 at 13:32), 8 truth regimes
+  (saturating N with τ = 24–200h, power-law N; power-law and
+  decelerating earners), scored against the truth as of the last
+  refresh before the target. Round-4 model: mean loss **0.093** vs
+  answer-truth (persistence ~0.23), **0.109** vs target-truth; it
+  beats persistence in all 8 regimes on answer-truth.
 - **Edge cases**: empty history, single read, missing (`null`) rates, and
   all-rates-100% all produce valid output. Two runs are byte-identical.
 
@@ -113,3 +165,5 @@ path, so the final-case forecast is unchanged.
 - `tools/validate.py` — builds the 10h pseudo-case and scores it.
 - `tools/tune.py` — grid-searches the flat-path parameters on it.
 - `tools/synth_test.py` — synthetic final-like cases + edge cases.
+- `tools/sparse_test.py` — sparse-refresh final-like cases, 8 truth
+  regimes, variant comparison (round 4).

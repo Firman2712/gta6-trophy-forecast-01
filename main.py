@@ -11,15 +11,15 @@ Model (stdlib only, offline, deterministic):
   and the rate is the ratio, so an Exophase refresh (N jumps, rates drop)
   falls out of the model instead of needing to be patched in.
 
-  * N(t): adoption curve.  On a growing history, log N is fitted against
-    log(hours since launch) (power-law adoption) on the last 24h of
-    distinct reads, and a saturating exponential N(t) = A - B*exp(-h/tau)
-    is fitted (tau by grid search) on all distinct reads.  The two are
-    blended by the observed deceleration (recent log-log slope vs overall
-    slope): no deceleration -> power law, strong deceleration ->
-    saturating.  Extrapolated to the target (capped at 2,000,000 tracked
-    players).  A pure exponential is NOT used: player growth slows after
-    launch, so it wildly overshoots a 4.5-day horizon.
+  * N(t): adoption curve.  On a growing history, a saturating
+    exponential N(t) = A - B*exp(-h/tau) is fitted (tau by grid search)
+    on the reads from the first refresh onward, and extrapolated to the
+    target (capped at 2,000,000 tracked players).  The power-law fit is
+    kept only as a fallback.  Round 4 validation showed the saturating
+    fit beats the power-law fit on sparse refresh histories in every
+    regime tested, even when the truth itself was a power law.  A pure
+    exponential is NOT used: player growth slows after launch, so it
+    wildly overshoots a 4.5-day horizon.
   * E_i(t): per-trophy earners.  On a growing history, log E_i is fitted
     against log(1 + hours) on the last 24h of distinct reads; the slope is
     shrunk toward the cross-trophy median slope (empirical-Bayes pooling),
@@ -34,8 +34,11 @@ Model (stdlib only, offline, deterministic):
     trophies 0.95) learned from the live public page at build time, plus a
     small uniform earners-growth term for the players already tracked.
   * Quantiles: median = E(target)/N(target); logit spread sigma grows
-    with horizon (sigma = sqrt(0.04 + 0.054 * horizon_days)), wider for
-    fast/uncertain trophies.  q_tau = logistic(logit(median) + z_tau*sigma).
+    with horizon (flat path 0.85*sqrt(0.04 + 0.054 * horizon_days);
+    growing path 0.8*sqrt(0.09 + 0.08 * horizon_days)), wider for
+    fast/uncertain trophies.  The growing path extrapolates E and N to
+    target - 12h (the answer is the rates as of the last Exophase
+    refresh before the target).
 
 No network, no model calls, no randomness.  Runs in well under 8 seconds.
 """
@@ -215,6 +218,16 @@ def forecast_case(case):
         target = at
     horizon_days = max(0.0, (target - at) / 86400.0)
 
+    # Refresh lag (growing branch only): the answer is the first valid
+    # read in the hour from the target, i.e. the rates as of the LAST
+    # Exophase refresh before the target.  Refresh gaps observed so far
+    # (4.7h, <=9h, >=14h and lengthening) put that refresh typically
+    # 12-24h before the target, so the growing path extrapolates E and
+    # N to target - 12h, not to the target itself.  The spread still
+    # uses the full horizon (the lag itself is uncertain).  The flat
+    # branch (90-min practice horizons) is untouched.
+    target_eff = max(target - 12 * 3600.0, at)
+
     # --- collect reads: (t, N, [rates]) sorted by time -------------------
     reads = []
     for r in hist:
@@ -267,6 +280,27 @@ def forecast_case(case):
             fresh.append((t, float(n), rates))
     growing = len(fresh) >= 3 and fresh[-1][1] > fresh[0][1] * 1.02
 
+    # Reads before the first refresh are a STALE snapshot, not a time
+    # series point: the launch-night page (638 players) already shows
+    # earners from hours of play, but h_launch() places those reads at
+    # h~0.1, which badly distorts every log-log fit (in sparse-history
+    # validation it dragged the fishing earners slope from ~2.1 to ~0.9
+    # and the N slope from ~1.2 to ~0.7).  All fits below use only the
+    # reads from the first N-change onward, with consecutive repeats of
+    # the same state dropped: the last read is appended even when the
+    # page has not refreshed, and that stale repeat would flatten every
+    # recent-slope estimate.
+    fit_reads = fresh
+    for _k in range(1, len(fresh)):
+        if abs(fresh[_k][1] - fresh[0][1]) > 1e-9:
+            fit_reads = fresh[_k:]
+            break
+    dedup = [fit_reads[0]] if fit_reads else []
+    for _p in fit_reads[1:]:
+        if abs(_p[1] - dedup[-1][1]) > 1e-9:
+            dedup.append(_p)
+    fit_reads = dedup
+
     # --- N(target) --------------------------------------------------------
     # Time variable throughout the growing branch: log hours since LAUNCH
     # (not since the first read — the first read is 10 min before launch,
@@ -275,35 +309,40 @@ def forecast_case(case):
         return max(0.1, (t - LAUNCH_EPOCH) / 3600.0)
 
     if growing:
-        # Fit on the last 24h of fresh reads (or all fresh reads if fewer).
-        cutoff = fresh[-1][0] - 24 * 3600.0
-        seg = [f for f in fresh if f[0] >= cutoff]
+        # Fit on the last 24h of fit reads (or all fit reads if fewer).
+        cutoff = fit_reads[-1][0] - 24 * 3600.0
+        seg = [f for f in fit_reads if f[0] >= cutoff]
         if len(seg) < 3:
-            seg = fresh[-6:] if len(fresh) >= 6 else fresh
+            seg = fit_reads[-6:] if len(fit_reads) >= 6 else fit_reads
         xs_log = [math.log(h_launch(t)) for t, _, _ in seg]
         ys = [math.log(n) for _, n, _ in seg]
-        xt = math.log(h_launch(target))
+        xt = math.log(h_launch(target_eff))
         n_pl = None
         fit = linfit(xs_log, ys)
         if fit is not None:
             n_pl = math.exp(fit[0] + fit[1] * xt)
-        # Deceleration: log-log slope over all fresh reads vs the last 24h.
-        # A falling slope means adoption is saturating.
-        xs_all = [math.log(h_launch(t)) for t, _, _ in fresh]
-        ys_all = [math.log(n) for _, n, _ in fresh]
-        f_all = linfit(xs_all, ys_all)
-        d = 1.0
-        if f_all is not None and fit is not None and f_all[1] > 0.05:
-            d = fit[1] / f_all[1]
+        # N(t) is the saturating fit alone (no power-law blend).  The
+        # blend used to weight by deceleration (recent vs overall log-log
+        # slope), but on the sparse histories the final case actually
+        # has -- a handful of distinct refresh states -- the weight never
+        # engaged correctly (it was 0 by construction when the recent
+        # window fell back to all points), and in validation the
+        # saturating fit beat the power-law fit in EVERY regime, even
+        # when the truth itself was a power law: the power-law fit on
+        # sparse points overshoots N, and the saturating fit's lower N
+        # compensates the earners fit's own downward bias.  Saturating
+        # is also the physically sensible prior (launch-wave adoption
+        # and Exophase discovery both decelerate; the observed log-log
+        # slope already fell from ~4.4 to ~1.2 in the first 13.5h).
         # Saturating adoption N(t) = A - B*exp(-(t-launch)/tau): player
         # growth slows as the launch wave passes.  Fit tau by grid search
-        # on ALL fresh reads (the curvature only shows over days), A and B
+        # on ALL fit reads (the curvature only shows over days), A and B
         # by linear regression of N on exp(-h/tau).
         n_sat = None
         best_sse = None
         for tau_h in (12.0, 24.0, 48.0, 96.0, 192.0, 384.0, 768.0, 1536.0):
-            us = [math.exp(-h_launch(t) / tau_h) for t, _, _ in fresh]
-            ns = [n for _, n, _ in fresh]
+            us = [math.exp(-h_launch(t) / tau_h) for t, _, _ in fit_reads]
+            ns = [n for _, n, _ in fit_reads]
             f = linfit(us, ns)
             if f is None:
                 continue
@@ -314,17 +353,13 @@ def forecast_case(case):
                       for u, n in zip(us, ns))
             if best_sse is None or sse < best_sse:
                 best_sse = sse
-                n_sat = a + b * math.exp(-h_launch(target) / tau_h)
-        # Blend by deceleration: no deceleration -> power law; strong
-        # deceleration -> saturating.
-        w_sat = clamp((0.9 - d) / 0.2, 0.0, 1.0)
-        if n_pl is not None and n_sat is not None and n_sat > 0:
-            n_tgt = math.exp((1.0 - w_sat) * math.log(n_pl) +
-                             w_sat * math.log(n_sat))
+                n_sat = a + b * math.exp(-h_launch(target_eff) / tau_h)
+        # N(t) is the saturating fit alone (see above); the power-law
+        # fit is kept only as a fallback if no saturating fit exists.
+        if n_sat is not None and n_sat > 0:
+            n_tgt = n_sat
         elif n_pl is not None:
             n_tgt = n_pl
-        elif n_sat is not None and n_sat > 0:
-            n_tgt = n_sat
         else:
             n_tgt = last_n
         n_tgt = clamp(n_tgt, last_n, N_CAP)
@@ -334,13 +369,15 @@ def forecast_case(case):
     # --- E_i(target) ------------------------------------------------------
     e_tgt = []
     if growing:
-        cutoff = fresh[-1][0] - 24 * 3600.0
-        seg = [f for f in fresh if f[0] >= cutoff]
+        cutoff = fit_reads[-1][0] - 24 * 3600.0
+        seg = [f for f in fit_reads if f[0] >= cutoff]
         if len(seg) < 3:
-            seg = fresh[-6:] if len(fresh) >= 6 else fresh
+            seg = fit_reads[-6:] if len(fit_reads) >= 6 else fit_reads
         xs = [math.log(h_launch(t)) for t, _, _ in seg]
-        xt = math.log(h_launch(target))
-        # Per-trophy slopes, then shrink toward the median slope.
+        xt = math.log(h_launch(target_eff))
+        # Per-trophy slopes, then shrink toward the median slope.  Each
+        # fit also keeps its centroid (xm, ym): the shrinkage pivots
+        # there, not at h=1h.
         slopes = []
         fits = {}
         for i in range(n_tr):
@@ -356,9 +393,12 @@ def forecast_case(case):
                 ys.append(math.log(e))
                 xx.append(x)
             f = linfit(xx, ys) if len(xx) >= 2 else None
-            fits[i] = f
-            if f is not None:
+            if f is not None and xx:
+                xm = sum(xx) / len(xx)
+                fits[i] = (f[0], f[1], xm, f[0] + f[1] * xm)
                 slopes.append(f[1])
+            else:
+                fits[i] = None
         slopes.sort()
         med_slope = slopes[len(slopes) // 2] if slopes else 0.0
         for i in range(n_tr):
@@ -372,12 +412,15 @@ def forecast_case(case):
                 # Too few points: grow with the median slope.
                 e = math.exp(math.log(le) + med_slope * (xt - xs[-1]))
             else:
-                a, b = f
+                a, b, xm, ym = f
                 # Shrink slope toward the median: weight by log-earners
                 # (big trophies carry their own signal, small ones borrow).
-                w = clamp(math.log10(le + 1.0) / 2.0, 0.15, 0.85)
+                # The shrink pivots at the fit's centroid (xm, ym): the
+                # old form exp(a + b_s*xt) pivoted at h=1h, far below the
+                # data, and systematically under-predicted fast trophies.
+                w = clamp(math.log10(le + 1.0) / 2.0, 0.15, 0.95)
                 b_s = w * b + (1.0 - w) * med_slope
-                e = math.exp(a + b_s * xt)
+                e = math.exp(ym + b_s * (xt - xm))
             e_tgt.append(clamp(e, le, n_tgt))
     else:
         n_tgt, e_tgt = flat_forecast(last_rates, last_n, at, target, trophies,
@@ -394,7 +437,7 @@ def forecast_case(case):
     # path was ~20% too wide; the 0.85 multiplier brings it to ~0.90.
     # Round 3 only.
     if growing:
-        sigma_base = math.sqrt(0.09 + 0.08 * horizon_days)
+        sigma_base = 0.8 * math.sqrt(0.09 + 0.08 * horizon_days)
     else:
         sigma_base = 0.85 * math.sqrt(0.04 + 0.054 * horizon_days)
     out = []
