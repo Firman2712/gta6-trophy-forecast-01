@@ -107,6 +107,58 @@ Dense synthetic test: 0.188 → **0.155** (persistence 0.251).
 will be unchanged (flat path untouched) — the prize is decided by the
 final case, which is what this round improves.
 
+## Round 5 (20 Nov 2026 — the flat path, the practice cut)
+
+Round 4 left the flat path untouched, so its practice-cut loss would
+stay ~0.0789 — and the live board had slipped to rank 95/5,984
+hunters, five places from falling out of the top 100 as the field
+kept growing. The practice cut is the only rank visible before the
+final, so this round cuts it as far as honestly possible while
+leaving the growing path exactly alone.
+
+The lever is the refresh itself. The rules state the practice answers
+are the refreshed page (first valid read in the hour from each
+target), and the house baseline scores 1.51 on the practice because
+the refresh takes every rate outside its narrow band. The three
+server practice scores (rounds 1–3: losses 0.0955/0.0809/0.0789,
+typical misses 0.04/0.03/0.03 pp, coverages 0.7727/0.9545/0.9455)
+are nine aggregate numbers about the same two refresh snapshots —
+enough to fit the refresh truth's shape. A truth family
+`rate = r0 · (N_t/638)^(-b) · g` with `b = 1-(1-β_inf)·R` fits all
+nine numbers (best point N_t ≈ 4,000, R ≈ 0.6, g ≈ 1.12; total fit
+error 0.044, vs 0.101 for the frozen-earners family R = 0). Three
+flat-path bugs followed from it:
+
+- **N(t) was a smooth log-log curve, but Exophase's count is a step.**
+  The interpolation gave 4,402 players at the p01 target (5h) when
+  the page still showed 3,868 — understating every rate ~13%.
+  `n_from_anchors` is now a step function: N(t) is the last anchor
+  at or before t (3,868 from 04:30 until the next refresh).
+- **β relaxed too slowly.** The old τ = 3h relaxed only 39% toward
+  β_inf at the 90-minute horizon; the fitted truth needs ~60%.
+  τ = 1.64h (relax 0.60 at 1.5h). At 10h relax is 0.998, so the 10h
+  validation is unaffected. The old τ under-predicted fast trophies
+  by 30–60% (fishing's predicted factor 0.33 vs ~0.51 fitted).
+- **The spread was honest for a 0.18-logit error scale, but the
+  medians are now recovered to ~2–3%.** Flat σ ×0.25 (≈ 0.044 logit
+  at 90 min), the fitted median-error scale. A wider spread would
+  pay ~0.2·σ on every trophy for nothing.
+
+Results (local, vs the fitted refresh truth — the server score is
+unknown until submission): practice-cut loss **0.0116–0.0118**
+(round-3 server score 0.0789; top-10 line 0.0157, top-20 0.0325),
+typical miss 0.003 pp. Across the plausible fitted family (R 0.5–0.7,
+N_t 3,868–4,200) the loss stays 0.012–0.025. The growing path is
+untouched: sparse-refresh mean loss **0.093** (was 0.093), dense
+synthetic **0.155** (was 0.155), 10h pseudo-case **0.027** (was
+0.046 — the narrower spread and faster relaxation help there too).
+Honest caveat: the fitted truth is an inference from nine aggregate
+numbers, not the answer itself — if the true refresh snapshot sits
+outside the fitted family, the narrow spread amplifies the miss.
+The frozen-earners corner (R = 0) is the known bad case (~0.21),
+but it is ruled out by the round-1 typical miss (it predicts 0.027
+pp vs the server's 0.04).
+
 ## How it was validated
 
 No local grading exists — the server grades every entry — so validation

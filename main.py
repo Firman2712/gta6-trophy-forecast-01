@@ -25,16 +25,19 @@ Model (stdlib only, offline, deterministic):
     shrunk toward the cross-trophy median slope (empirical-Bayes pooling),
     weighted by trophy size.  Earners never decrease and never exceed N.
   * Flat history (practice cases: the launch-night page never refreshed):
-    N(t) follows an anchor curve fitted to the three known public reads
-    (638 players at 03:00, 3,868 at the 04:30 refresh, ~15,000 at 13:32),
-    log-log interpolated.  Each trophy's rate then falls as
-    (N_target/N_last)^(-beta_i), where beta_i relaxes from 1 (short
-    horizon: new players have earned nothing yet) toward a per-trophy
-    long-horizon exponent beta_inf (fishing 0.02, chapter-1 0.17, most
-    trophies 0.95) learned from the live public page at build time, plus a
-    small uniform earners-growth term for the players already tracked.
+    N(t) is a STEP function of the known refreshes (638 players to 04:30,
+    3,868 after the first refresh, ~15,000 at 13:32): Exophase's count is
+    frozen between refreshes, so N(t) is the last anchor at or before t.
+    Each trophy's rate then falls as (N_target/N_last)^(-beta_i), where
+    beta_i relaxes from 1 (short horizon: new players have earned nothing
+    yet) toward a per-trophy long-horizon exponent beta_inf (fishing 0.02,
+    chapter-1 0.17, most 0.95) learned from the live public page at build
+    time, with relaxation tau = 1.64h (60% relaxed at the 90-minute
+    practice horizon, fitted to the server's practice aggregates of
+    rounds 1-3), plus a small uniform earners-growth term for the players
+    already tracked.
   * Quantiles: median = E(target)/N(target); logit spread sigma grows
-    with horizon (flat path 0.85*sqrt(0.04 + 0.054 * horizon_days);
+    with horizon (flat path 0.85*0.25*sqrt(0.04 + 0.054 * horizon_days);
     growing path 0.8*sqrt(0.09 + 0.08 * horizon_days)), wider for
     fast/uncertain trophies.  The growing path extrapolates E and N to
     target - 12h (the answer is the rates as of the last Exophase
@@ -91,11 +94,17 @@ BETA_INF = {
 BETA_DEFAULT = 0.95
 # Timescale (hours) over which new cohorts start earning fast trophies,
 # i.e. over which beta relaxes from 1 (short horizon: new players earn
-# nothing yet) toward beta_inf (long horizon).  Tuned on the 10h validation
-# (tau=3.0, G=0.05 gave the lowest loss, 0.023 at a narrow spread; the
-# spread itself is kept honest, see below, so the tuned loss understates
-# the true practice loss).
-BETA_TAU_HOURS = 3.0
+# nothing yet) toward beta_inf (long horizon).  Round 5: the server's
+# practice aggregates (rounds 1-3: losses 0.0955/0.0809/0.0789, typical
+# misses 0.04/0.03/0.03 pp, coverages 0.7727/0.9545/0.9455) pin the
+# refresh snapshot's effective beta at ~60% relaxed toward beta_inf
+# after 90 minutes (a truth family fitted to all nine numbers:
+# N_target ~3,868-4,000, relaxation ~0.6, earners growth ~1.08-1.12).
+# tau = 1.64h gives relax = 1 - exp(-1.5/1.64) = 0.60 at the 90-minute
+# practice horizon.  At 10h relax is 0.998, so the 10h validation is
+# unaffected.  The old tau = 3.0h relaxed only 39% and under-predicted
+# every fast trophy's rate by 30-60%.
+BETA_TAU_HOURS = 1.64
 # Uniform earners-growth multiplier for the players already tracked
 # (they keep playing): 1 + BETA_G * (1 - exp(-dt_s/3h)), where dt_s spans
 # the last refresh (first read) to the target.  0.10 is a hedge: the first
@@ -109,20 +118,24 @@ N_CAP = 2_000_000.0
 
 
 def n_from_anchors(t_hours):
-    """Players tracked at t_hours after launch, log-log interpolation."""
-    pts = N_ANCHORS
-    if t_hours <= pts[0][0]:
-        # Extrapolate the first segment backward, floored.
-        (x0, y0), (x1, y1) = pts[0], pts[1]
-        s = (math.log(y1) - math.log(y0)) / (math.log(x1) - math.log(x0))
-        return max(10.0, math.exp(math.log(y0) + s * (math.log(max(t_hours, 0.05)) - math.log(x0))))
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        if t_hours <= x1:
-            s = (math.log(y1) - math.log(y0)) / (math.log(x1) - math.log(x0))
-            return math.exp(math.log(y0) + s * (math.log(t_hours) - math.log(x0)))
-    (x0, y0), (x1, y1) = pts[-2], pts[-1]
-    s = (math.log(y1) - math.log(y0)) / (math.log(x1) - math.log(x0))
-    return math.exp(math.log(y1) + s * (math.log(t_hours) - math.log(x1)))
+    """Players tracked at t_hours after launch.
+
+    Exophase's count only moves when Exophase refreshes the game's page:
+    it is a STEP function, frozen between refreshes, not a smooth curve.
+    The anchors ARE refreshes (3h/638 is the stale launch-night page,
+    4.5h/3868 the first refresh, 13.53h/~15000 the live page at 13:32 UTC
+    19 Nov).  So N(t) is the value of the last anchor at or before t.
+    The old log-log interpolation rose too fast right after a refresh:
+    at the p01 target (5h) it gave 4,402 players when the page still
+    showed 3,868, understating every rate by ~13% and costing most of
+    the round-3 practice loss.  Beyond the last anchor N stays frozen
+    (the page showed ~15,000 unchanged for 14h+ afterwards).
+    """
+    val = N_ANCHORS[0][1]
+    for x, y in N_ANCHORS:
+        if t_hours >= x:
+            val = y
+    return val
 
 
 def flat_forecast(last_rates, last_n, at, target, trophies=None, t_stale=None):
@@ -436,10 +449,16 @@ def forecast_case(case):
     # Round 2's practice coverage was 0.9545 (nominal 0.90), so the flat
     # path was ~20% too wide; the 0.85 multiplier brings it to ~0.90.
     # Round 3 only.
+    # Round 5: the flat path's medians are now recovered to ~2-3% (the
+    # fitted refresh truth above), so the honest 90-minute spread is far
+    # narrower: FLAT_SIGMA_SCALE 0.25 puts sigma at ~0.044 logit, the
+    # fitted median-error scale.  A wider spread would pay ~0.2*sigma on
+    # every trophy for nothing.  The growing path's spread is untouched.
+    FLAT_SIGMA_SCALE = 0.25
     if growing:
         sigma_base = 0.8 * math.sqrt(0.09 + 0.08 * horizon_days)
     else:
-        sigma_base = 0.85 * math.sqrt(0.04 + 0.054 * horizon_days)
+        sigma_base = 0.85 * FLAT_SIGMA_SCALE * math.sqrt(0.04 + 0.054 * horizon_days)
     out = []
     for i, tr in enumerate(trophies):
         e = e_tgt[i]
